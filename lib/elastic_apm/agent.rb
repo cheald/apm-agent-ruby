@@ -60,7 +60,7 @@ module ElasticAPM
       @config = config
 
       @messages = Queue.new
-      @batched_transactions = Queue.new
+      @pending_transactions = Queue.new
       @http = Http.new(config)
 
       @instrumenter = Instrumenter.new(config, self)
@@ -68,7 +68,7 @@ module ElasticAPM
       @error_builder = ErrorBuilder.new(config)
     end
 
-    attr_reader :config, :messages, :batched_transactions, :instrumenter,
+    attr_reader :config, :messages, :pending_transactions, :instrumenter,
       :context_builder, :http
 
     def start
@@ -98,7 +98,7 @@ module ElasticAPM
     def enqueue_transaction(transaction)
       boot_worker unless worker_running?
 
-      batched_transactions.push(transaction)
+      pending_transactions.push(transaction)
     end
 
     def enqueue_error(error)
@@ -177,7 +177,7 @@ module ElasticAPM
         TimedWorker.new(
           config,
           messages,
-          batched_transactions,
+          pending_transactions,
           http
         ).run_forever
       end
