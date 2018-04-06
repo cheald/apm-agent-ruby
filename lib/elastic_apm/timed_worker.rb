@@ -12,16 +12,6 @@ module ElasticAPM
     end
 
     # @api private
-    class RequestMsg
-      def initialize(path, payload)
-        @path = path
-        @payload = payload
-      end
-
-      attr_reader :path, :payload
-    end
-
-    # @api private
     class ErrorMsg
       def initialize(error)
         @error = error
@@ -30,11 +20,11 @@ module ElasticAPM
       attr_reader :error
     end
 
-    def initialize(config, messages, batched_transactions, adapter)
+    def initialize(config, messages, pending_transactions, adapter)
       @config = config
-      @adapter = adapter
       @messages = messages
-      @batched_transactions = batched_transactions
+      @pending_transactions = pending_transactions
+      @adapter = adapter
 
       @last_sent_transactions = Time.now.utc
 
@@ -44,7 +34,7 @@ module ElasticAPM
       )
     end
 
-    attr_reader :config, :messages, :batched_transactions
+    attr_reader :config, :messages, :pending_transactions
 
     def run_forever
       loop do
@@ -54,23 +44,20 @@ module ElasticAPM
     end
 
     def run_once
+      collect_and_send_transactions if should_flush_transactions?
       process_messages
-
-      flush_transactions if should_flush_transactions?
     end
 
     private
 
-    # rubocop:disable Metrics/MethodLength
     def process_messages
       while (msg = messages.pop(true))
         case msg
-        when RequestMsg
-          process_request msg
         when ErrorMsg
-          process_error msg
+          post_error msg
         when StopMsg
-          flush_transactions
+          # empty collected transactions before exiting
+          collect_and_send_transactions
 
           Thread.exit
         end
@@ -78,31 +65,33 @@ module ElasticAPM
     rescue ThreadError
       # queue empty
     end
-    # rubocop:enable Metrics/MethodLength
 
-    def process_request(req)
-      @adapter.post(req.path, req.payload)
-    rescue ::Exception => e
-      fatal 'Failed posting: %s', e.inspect
-      debug e.backtrace.join("\n")
-      nil
+    def post_error(msg)
+      payload = @serializers.errors.build_all([msg.error])
+      @adapter.post('/v1/errors', payload)
     end
 
-    def flush_transactions
-      return if batched_transactions.empty?
+    def collect_and_send_transactions
+      return if pending_transactions.empty?
 
       transactions = collect_batched_transactions
 
       payload = @serializers.transactions.build_all(transactions)
-      msg = RequestMsg.new('/v1/transactions', payload)
-      process_request msg
+
+      begin
+        @adapter.post('/v1/transactions', payload)
+      rescue ::Exception => e
+        fatal 'Failed posting: %s', e.inspect
+        debug e.backtrace.join("\n")
+        nil
+      end
     end
 
     def collect_batched_transactions
       batch = []
 
       begin
-        while (transaction = batched_transactions.pop(true))
+        while (transaction = pending_transactions.pop(true))
           batch << transaction
         end
       rescue ThreadError
@@ -116,14 +105,9 @@ module ElasticAPM
       interval = config.flush_interval
 
       return true if interval.nil?
-      return true if batched_transactions.length >= config.max_queue_size
+      return true if pending_transactions.length >= config.max_queue_size
 
       Time.now.utc - @last_sent_transactions >= interval
-    end
-
-    def process_error(msg)
-      payload = @serializers.errors.build_all([msg.error])
-      messages.push RequestMsg.new('/v1/errors', payload)
     end
   end
 end
