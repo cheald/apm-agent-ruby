@@ -49,6 +49,19 @@ module ElasticAPM
 
           expect(FakeServer.requests.length).to be 1
         end
+
+        context 'with a small queue size' do
+          let(:config) { Config.new max_queue_size: 2 }
+
+          it 'breaks the loop if reaching max queue size' do
+            transactions.push build_transaction
+            transactions.push build_transaction
+
+            wait_for_requests_to_finish 1
+
+            expect(FakeServer.requests.length).to be 1
+          end
+        end
       end
 
       context 'with an error message', :with_fake_server do

@@ -50,21 +50,25 @@ module ElasticAPM
 
     private
 
+    # rubocop:disable Metrics/MethodLength
     def process_messages
+      should_exit = false
+
       while (msg = messages.pop(true))
         case msg
         when ErrorMsg
           post_error msg
         when StopMsg
+          should_exit = true
+
           # empty collected transactions before exiting
           collect_and_send_transactions
-
-          Thread.exit
         end
       end
-    rescue ThreadError
-      # queue empty
+    rescue ThreadError # queue empty
+      Thread.exit if should_exit
     end
+    # rubocop:enable Metrics/MethodLength
 
     def post_error(msg)
       payload = @serializers.errors.build_all([msg.error])
@@ -91,11 +95,11 @@ module ElasticAPM
       batch = []
 
       begin
-        while (transaction = pending_transactions.pop(true))
+        while (transaction = pending_transactions.pop(true)) &&
+              batch.length <= config.max_queue_size
           batch << transaction
         end
-      rescue ThreadError
-        # queue empty
+      rescue ThreadError # queue empty
       end
 
       batch
